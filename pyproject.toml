@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nzm-auto"
+version = "0.1.0"
+description = "Windows automation framework built on MaaFramework."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = { text = "MIT" }
+authors = [{ name = "NZM-auto contributors" }]
+dependencies = [
+    "MaaFw==5.12.1",
+]
+
+[project.scripts]
+nzm-auto = "nzm_auto.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nzm_auto"]

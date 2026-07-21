@@ -1,0 +1,25 @@
+{
+  "window": {
+    "title_pattern": "",
+    "class_name": null,
+    "client_resolution": [1920, 1080]
+  },
+  "controller": {
+    "screencap_mode": "background",
+    "background_screencap": ["FramePool", "PrintWindow"],
+    "foreground_screencap": ["DXGI_DesktopDup_Window", "ScreenDC"],
+    "mouse_input": "PostMessage",
+    "keyboard_input": "PostMessage",
+    "allow_foreground_fallback": true
+  },
+  "runtime": {
+    "resource_path": "assets/resource",
+    "task_entry": "FrameworkSelfTest",
+    "task_timeout_seconds": 60
+  },
+  "diagnostics": {
+    "save_failed_screenshots": true,
+    "save_recognition_details": true,
+    "stale_frame_threshold": 10
+  }
+}
