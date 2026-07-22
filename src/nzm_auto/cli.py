@@ -10,6 +10,7 @@ import sys
 
 from nzm_auto.config.loader import load_config
 from nzm_auto.diagnostics.screenshot import ScreenshotError, capture_image, capture_screenshot
+from nzm_auto.diagnostics.input_test import InputTestError, run_input_test
 from nzm_auto.diagnostics.template_match import (
     TemplateMatchDiagnosticError,
     run_template_match,
@@ -113,6 +114,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     template_match.add_argument(
         "--threshold", type=float, default=0.8, help="TemplateMatch threshold, default 0.8."
+    )
+
+    input_test = subparsers.add_parser(
+        "input-test", help="Send one explicit double-click and verify the visual change."
+    )
+    input_test.add_argument(
+        "--config", type=Path, default=DEFAULT_CONFIG_PATH, help="Path to a JSON config file."
+    )
+    input_test.add_argument("--title", help="Optional title substring filter.")
+    input_test.add_argument("--class-name", help="Optional window class substring filter.")
+    input_test.add_argument(
+        "--visible-only", action="store_true", help="Only show currently visible windows."
+    )
+    input_test.add_argument("--index", type=int, help="Choose an index without an interactive prompt.")
+    input_test.add_argument(
+        "--point",
+        nargs=2,
+        type=int,
+        metavar=("X", "Y"),
+        required=True,
+        help="Click point in Maa screenshot coordinates.",
+    )
+    input_test.add_argument(
+        "--yes", action="store_true", help="Confirm the double-click without an interactive prompt."
     )
 
     windows = subparsers.add_parser("windows", help="Read-only desktop window tools.")
@@ -408,6 +433,88 @@ def run_template_match_program(args) -> int:
     return exit_code
 
 
+def run_input_test_program(args) -> int:
+    config = load_config(args.config)
+    workspace = create_debug_workspace(PROJECT_ROOT, config["diagnostics"]["debug_dir"])
+    log_path = configure_file_logging(workspace)
+    logger = logging.getLogger(__name__)
+    print(f"Debug log: {log_path}")
+    print(f"MaaFramework: {get_maa_version()}")
+
+    try:
+        window = choose_window_for_run(
+            args.title,
+            args.class_name,
+            args.visible_only,
+            args.index,
+        )
+    except WindowSelectionError as error:
+        print(f"Window selection failed: {error}", file=sys.stderr)
+        return 2
+
+    point = tuple(args.point)
+    print(f"Selected: 0x{window.hwnd:X} {window.class_name} {window.title}")
+    print(f"Planned double-click: {point} (2 clicks, 100ms interval)")
+    print("Mouse input: Seize (the target window and physical mouse may be occupied briefly)")
+    if not args.yes:
+        print(
+            "Type YES to perform this double-click (the target may open): ",
+            end="",
+            file=sys.stderr,
+            flush=True,
+        )
+        if sys.stdin.readline().strip() != "YES":
+            print("Input test cancelled; no click was sent.")
+            return 0
+
+    controller = None
+    exit_code = 0
+    try:
+        input_test_controller_config = dict(config["controller"])
+        input_test_controller_config["mouse_input"] = "Seize"
+        controller = create_controller(window, input_test_controller_config)
+        connect_controller(controller)
+        timestamp_prefix = "input-test"
+        before_path = workspace.timestamped_path(workspace.screenshots, f"{timestamp_prefix}-before", ".png")
+        after_path = workspace.timestamped_path(workspace.screenshots, f"{timestamp_prefix}-after", ".png")
+        difference_path = workspace.timestamped_path(
+            workspace.screenshots, f"{timestamp_prefix}-difference", ".png"
+        )
+        report_path = workspace.timestamped_path(workspace.reports, timestamp_prefix, ".json")
+        result = run_input_test(
+            controller,
+            point,
+            before_path,
+            after_path,
+            difference_path,
+            report_path,
+        )
+        print(f"Double-click succeeded at: {result.point} ({result.click_count} click jobs)")
+        print(f"Visual change detected: {result.difference.visual_change_detected}")
+        print(f"Changed pixel ratio: {result.difference.changed_pixel_ratio:.6f}")
+        print(f"Mean absolute difference: {result.difference.mean_absolute_difference:.6f}")
+        print(f"Before: {result.before_path}")
+        print(f"After: {result.after_path}")
+        print(f"Difference: {result.difference_path}")
+        print(f"Report: {result.report_path}")
+        logger.info("Input test point=%s difference=%s", point, result.difference)
+        if not result.difference.visual_change_detected:
+            exit_code = 8
+    except (ControllerConnectionError, ScreenshotError, InputTestError) as error:
+        print(f"Input test failed: {error}", file=sys.stderr)
+        logger.exception("Input test failed")
+        exit_code = 8
+    finally:
+        if controller is not None:
+            try:
+                deactivate_controller(controller)
+                print("Win32 controller deactivated successfully.")
+            except ControllerConnectionError as error:
+                print(f"Controller cleanup failed: {error}", file=sys.stderr)
+                exit_code = 4
+    return exit_code
+
+
 def run_window_select(config_path: Path, as_json: bool) -> int:
     config = load_config(config_path)
     window_config = config["window"]
@@ -484,6 +591,8 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.command == "template-match":
         return run_template_match_program(args)
+    if args.command == "input-test":
+        return run_input_test_program(args)
     if args.command == "windows" and args.windows_command == "list":
         return run_window_list(args.title, args.class_name, args.json)
     if args.command == "windows" and args.windows_command == "select":

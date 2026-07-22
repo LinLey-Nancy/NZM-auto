@@ -91,3 +91,11 @@ nzm-auto template-match --title "逆战" --index 0 --template-roi 20 10 200 35
 ```
 
 模板、匹配标注图和 JSON 报告分别写入 `debug/templates/`、`debug/screenshots/` 和 `debug/reports/`。
+
+执行一次明确坐标的双击并对比前后截图：
+
+```powershell
+nzm-auto input-test --title "逆战" --index 0 --point 280 205
+```
+
+默认需要输入 `YES` 才会发送双击，并明确提示目标可能被打开；自动化测试可显式传入 `--yes`。该诊断命令临时使用 MaaFramework 的 `Seize` 前台鼠标输入，以产生 Windows 能够识别的原生双击，因此执行时会短暂激活目标窗口并占用物理鼠标。两次点击间隔 100ms，前后截图、差异图和 JSON 报告均写入 `debug/`。
