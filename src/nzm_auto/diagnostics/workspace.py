@@ -21,19 +21,11 @@ class DebugWorkspace:
         return self.root / "screenshots"
 
     @property
-    def templates(self) -> Path:
-        return self.root / "templates"
-
-    @property
     def reports(self) -> Path:
         return self.root / "reports"
 
-    @property
-    def temp(self) -> Path:
-        return self.root / "temp"
-
     def ensure(self) -> None:
-        for path in (self.logs, self.screenshots, self.templates, self.reports, self.temp):
+        for path in (self.logs, self.screenshots, self.reports):
             path.mkdir(parents=True, exist_ok=True)
 
     def timestamped_path(self, directory: Path, prefix: str, suffix: str) -> Path:

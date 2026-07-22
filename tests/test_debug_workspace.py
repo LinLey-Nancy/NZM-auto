@@ -12,6 +12,6 @@ class DebugWorkspaceTests(unittest.TestCase):
 
             self.assertTrue(workspace.logs.is_dir())
             self.assertTrue(workspace.screenshots.is_dir())
-            self.assertTrue(workspace.templates.is_dir())
             self.assertTrue(workspace.reports.is_dir())
-            self.assertTrue(workspace.temp.is_dir())
+            self.assertFalse((workspace.root / "templates").exists())
+            self.assertFalse((workspace.root / "temp").exists())

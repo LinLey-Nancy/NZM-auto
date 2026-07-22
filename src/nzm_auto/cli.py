@@ -8,11 +8,23 @@ import logging
 from pathlib import Path
 import sys
 
+from nzm_auto.automation.template_action import (
+    TemplateActionError,
+    load_template_image,
+    run_template_action,
+)
+from nzm_auto.automation.workflow import (
+    WorkflowConfigError,
+    WorkflowExecutionError,
+    load_workflow,
+    run_workflow,
+)
 from nzm_auto.config.loader import load_config
 from nzm_auto.diagnostics.screenshot import ScreenshotError, capture_image, capture_screenshot
 from nzm_auto.diagnostics.input_test import InputTestError, run_input_test
 from nzm_auto.diagnostics.template_match import (
     TemplateMatchDiagnosticError,
+    crop_template,
     run_template_match,
 )
 from nzm_auto.diagnostics.workspace import create_debug_workspace, configure_file_logging
@@ -138,6 +150,65 @@ def build_parser() -> argparse.ArgumentParser:
     )
     input_test.add_argument(
         "--yes", action="store_true", help="Confirm the double-click without an interactive prompt."
+    )
+
+    template_action = subparsers.add_parser(
+        "template-action",
+        help="Recognize a template, click its center, and verify the visual result.",
+    )
+    template_action.add_argument(
+        "--config", type=Path, default=DEFAULT_CONFIG_PATH, help="Path to a JSON config file."
+    )
+    template_action.add_argument("--title", help="Optional title substring filter.")
+    template_action.add_argument("--class-name", help="Optional window class substring filter.")
+    template_action.add_argument(
+        "--visible-only", action="store_true", help="Only show currently visible windows."
+    )
+    template_action.add_argument(
+        "--index", type=int, help="Choose an index without an interactive prompt."
+    )
+    template_source = template_action.add_mutually_exclusive_group(required=True)
+    template_source.add_argument(
+        "--template",
+        type=Path,
+        help="Existing PNG template; relative paths are resolved from the project root.",
+    )
+    template_source.add_argument(
+        "--template-roi",
+        nargs=4,
+        type=int,
+        metavar=("X", "Y", "WIDTH", "HEIGHT"),
+        help="Diagnostic-only in-memory template crop in Maa screenshot coordinates.",
+    )
+    template_action.add_argument(
+        "--threshold", type=float, default=0.8, help="TemplateMatch threshold, default 0.8."
+    )
+    template_action.add_argument(
+        "--action", choices=("click", "double-click"), required=True, help="Input to perform."
+    )
+    template_action.add_argument(
+        "--yes", action="store_true", help="Confirm input without an interactive prompt."
+    )
+
+    workflow_run = subparsers.add_parser(
+        "workflow-run", help="Execute a validated sequence of template-driven actions."
+    )
+    workflow_run.add_argument(
+        "--config", type=Path, default=DEFAULT_CONFIG_PATH, help="Path to a JSON config file."
+    )
+    workflow_run.add_argument(
+        "--workflow", type=Path, required=True, help="Path to a workflow JSON file."
+    )
+    workflow_run.add_argument("--title", help="Optional title substring filter.")
+    workflow_run.add_argument("--class-name", help="Optional window class substring filter.")
+    workflow_run.add_argument(
+        "--visible-only", action="store_true", help="Only show currently visible windows."
+    )
+    workflow_run.add_argument(
+        "--index", type=int, help="Choose an index without an interactive prompt."
+    )
+    workflow_run.add_argument(
+        "--yes", action="store_true", help="Confirm the complete workflow without a prompt."
     )
 
     windows = subparsers.add_parser("windows", help="Read-only desktop window tools.")
@@ -395,7 +466,6 @@ def run_template_match_program(args) -> int:
         runtime = load_task_runtime(controller, resource_path.resolve(), workspace.logs / "maa")
         image = capture_image(controller)
 
-        template_path = workspace.timestamped_path(workspace.templates, "template", ".png")
         annotated_path = workspace.timestamped_path(
             workspace.screenshots, "template-match", ".png"
         )
@@ -405,14 +475,12 @@ def run_template_match_program(args) -> int:
             image,
             tuple(args.template_roi),
             args.threshold,
-            template_path,
             annotated_path,
             report_path,
         )
         print(f"TemplateMatch hit: {result.hit}")
         print(f"Score: {result.score}")
         print(f"Box: {result.box}")
-        print(f"Template: {result.template_path}")
         print(f"Annotated image: {result.annotated_path}")
         print(f"Report: {result.report_path}")
         logger.info("TemplateMatch result hit=%s score=%s box=%s", result.hit, result.score, result.box)
@@ -515,6 +583,197 @@ def run_input_test_program(args) -> int:
     return exit_code
 
 
+def run_template_action_program(args) -> int:
+    config = load_config(args.config)
+    workspace = create_debug_workspace(PROJECT_ROOT, config["diagnostics"]["debug_dir"])
+    log_path = configure_file_logging(workspace)
+    logger = logging.getLogger(__name__)
+    print(f"Debug log: {log_path}")
+    print(f"MaaFramework: {get_maa_version()}")
+
+    try:
+        window = choose_window_for_run(
+            args.title,
+            args.class_name,
+            args.visible_only,
+            args.index,
+        )
+    except WindowSelectionError as error:
+        print(f"Window selection failed: {error}", file=sys.stderr)
+        return 2
+
+    source_description = str(args.template) if args.template else f"live ROI {args.template_roi}"
+    print(f"Selected: 0x{window.hwnd:X} {window.class_name} {window.title}")
+    print(f"Template source: {source_description}")
+    print(f"Planned action: {args.action} at the recognized box center")
+    print("Mouse input: Seize (the target window and physical mouse may be occupied briefly)")
+    if not args.yes:
+        print("Type YES to perform this action: ", end="", file=sys.stderr, flush=True)
+        if sys.stdin.readline().strip() != "YES":
+            print("Template action cancelled; no input was sent.")
+            return 0
+
+    controller = None
+    exit_code = 0
+    try:
+        action_controller_config = dict(config["controller"])
+        action_controller_config["mouse_input"] = "Seize"
+        controller = create_controller(window, action_controller_config)
+        connect_controller(controller)
+
+        resource_path = Path(config["runtime"]["resource_path"])
+        if not resource_path.is_absolute():
+            resource_path = PROJECT_ROOT / resource_path
+        runtime = load_task_runtime(controller, resource_path.resolve(), workspace.logs / "maa")
+
+        if args.template is not None:
+            template_path = args.template
+            if not template_path.is_absolute():
+                template_path = PROJECT_ROOT / template_path
+            template = load_template_image(template_path.resolve())
+        else:
+            template = crop_template(capture_image(controller), tuple(args.template_roi))
+
+        prefix = "template-action"
+        result = run_template_action(
+            runtime,
+            controller,
+            template,
+            args.threshold,
+            args.action,
+            workspace.timestamped_path(workspace.screenshots, f"{prefix}-before", ".png"),
+            workspace.timestamped_path(workspace.screenshots, f"{prefix}-after", ".png"),
+            workspace.timestamped_path(workspace.screenshots, f"{prefix}-target", ".png"),
+            workspace.timestamped_path(workspace.screenshots, f"{prefix}-difference", ".png"),
+            workspace.timestamped_path(workspace.reports, prefix, ".json"),
+        )
+        print(f"TemplateMatch score: {result.score}")
+        print(f"Matched box: {result.box}")
+        print(f"Action point: {result.point}")
+        print(f"Action succeeded: {result.action} ({result.click_count} click jobs)")
+        print(f"Visual change detected: {result.difference.visual_change_detected}")
+        print(f"Changed pixel ratio: {result.difference.changed_pixel_ratio:.6f}")
+        print(f"Target image: {result.annotated_path}")
+        print(f"Before: {result.before_path}")
+        print(f"After: {result.after_path}")
+        print(f"Difference: {result.difference_path}")
+        print(f"Report: {result.report_path}")
+        logger.info(
+            "Template action=%s point=%s score=%s difference=%s",
+            result.action,
+            result.point,
+            result.score,
+            result.difference,
+        )
+        if not result.difference.visual_change_detected:
+            exit_code = 9
+    except (
+        ControllerConnectionError,
+        ScreenshotError,
+        TaskRuntimeError,
+        TemplateMatchDiagnosticError,
+        TemplateActionError,
+    ) as error:
+        print(f"Template action failed: {error}", file=sys.stderr)
+        logger.exception("Template action failed")
+        exit_code = 9
+    finally:
+        if controller is not None:
+            try:
+                deactivate_controller(controller)
+                print("Win32 controller deactivated successfully.")
+            except ControllerConnectionError as error:
+                print(f"Controller cleanup failed: {error}", file=sys.stderr)
+                exit_code = 4
+    return exit_code
+
+
+def run_workflow_program(args) -> int:
+    config = load_config(args.config)
+    workspace = create_debug_workspace(PROJECT_ROOT, config["diagnostics"]["debug_dir"])
+    log_path = configure_file_logging(workspace)
+    logger = logging.getLogger(__name__)
+    workflow_path = args.workflow
+    if not workflow_path.is_absolute():
+        workflow_path = PROJECT_ROOT / workflow_path
+    try:
+        definition = load_workflow(workflow_path.resolve(), PROJECT_ROOT)
+    except WorkflowConfigError as error:
+        print(f"Workflow configuration failed: {error}", file=sys.stderr)
+        return 10
+
+    print(f"Debug log: {log_path}")
+    print(f"MaaFramework: {get_maa_version()}")
+    print(f"Workflow: {definition.name} ({len(definition.steps)} step(s))")
+    for index, step in enumerate(definition.steps, start=1):
+        print(
+            f"  {index}. {step.name}: {step.action}, template={step.template_path}, "
+            f"attempts={step.recognition_attempts}"
+        )
+
+    try:
+        window = choose_window_for_run(
+            args.title,
+            args.class_name,
+            args.visible_only,
+            args.index,
+        )
+    except WindowSelectionError as error:
+        print(f"Window selection failed: {error}", file=sys.stderr)
+        return 2
+
+    print(f"Selected: 0x{window.hwnd:X} {window.class_name} {window.title}")
+    print("Mouse input: Seize (the target window and physical mouse may be occupied briefly)")
+    if not args.yes:
+        print("Type YES to perform this workflow: ", end="", file=sys.stderr, flush=True)
+        if sys.stdin.readline().strip() != "YES":
+            print("Workflow cancelled; no input was sent.")
+            return 0
+
+    controller = None
+    exit_code = 0
+    try:
+        workflow_controller_config = dict(config["controller"])
+        workflow_controller_config["mouse_input"] = "Seize"
+        controller = create_controller(window, workflow_controller_config)
+        connect_controller(controller)
+
+        resource_path = Path(config["runtime"]["resource_path"])
+        if not resource_path.is_absolute():
+            resource_path = PROJECT_ROOT / resource_path
+        runtime = load_task_runtime(controller, resource_path.resolve(), workspace.logs / "maa")
+        result = run_workflow(definition, runtime, controller, workspace)
+
+        for index, step_result in enumerate(result.steps, start=1):
+            action_result = step_result.action_result
+            print(
+                f"Step {index} succeeded: {step_result.name}; action={action_result.action}; "
+                f"point={action_result.point}; score={action_result.score}; "
+                f"recognition_attempt={step_result.recognition_attempt}"
+            )
+        print(f"Workflow succeeded: {result.name}")
+        print(f"Workflow report: {result.report_path}")
+        logger.info("Workflow succeeded name=%r steps=%s", result.name, len(result.steps))
+    except (
+        ControllerConnectionError,
+        TaskRuntimeError,
+        TemplateActionError,
+        WorkflowExecutionError,
+    ) as error:
+        print(f"Workflow failed: {error}", file=sys.stderr)
+        logger.exception("Workflow failed")
+        exit_code = 10
+    finally:
+        if controller is not None:
+            try:
+                deactivate_controller(controller)
+                print("Win32 controller deactivated successfully.")
+            except ControllerConnectionError as error:
+                print(f"Controller cleanup failed: {error}", file=sys.stderr)
+                exit_code = 4
+    return exit_code
+
+
 def run_window_select(config_path: Path, as_json: bool) -> int:
     config = load_config(config_path)
     window_config = config["window"]
@@ -593,6 +852,10 @@ def main(argv: list[str] | None = None) -> int:
         return run_template_match_program(args)
     if args.command == "input-test":
         return run_input_test_program(args)
+    if args.command == "template-action":
+        return run_template_action_program(args)
+    if args.command == "workflow-run":
+        return run_workflow_program(args)
     if args.command == "windows" and args.windows_command == "list":
         return run_window_list(args.title, args.class_name, args.json)
     if args.command == "windows" and args.windows_command == "select":

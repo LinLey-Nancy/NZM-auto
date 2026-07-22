@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "name": "example-template-workflow",
+  "steps": [
+    {
+      "name": "open-target",
+      "template": "assets/resource/image/replace-with-template.png",
+      "threshold": 0.8,
+      "action": "double-click",
+      "recognition_attempts": 3,
+      "recognition_interval_ms": 500,
+      "pre_delay_ms": 0,
+      "post_delay_ms": 500,
+      "require_visual_change": true
+    }
+  ]
+}

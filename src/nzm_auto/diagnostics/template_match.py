@@ -28,11 +28,17 @@ class MatchBox:
 
 
 @dataclass(frozen=True, slots=True)
+class TemplateRecognitionResult:
+    hit: bool
+    score: float | None
+    box: MatchBox | None
+
+
+@dataclass(frozen=True, slots=True)
 class TemplateMatchDiagnosticResult:
     hit: bool
     score: float | None
     box: MatchBox | None
-    template_path: Path
     annotated_path: Path
     report_path: Path
 
@@ -59,23 +65,16 @@ def crop_template(image: numpy.ndarray, roi: tuple[int, int, int, int]) -> numpy
     return image[y : y + height, x : x + width].copy()
 
 
-def run_template_match(
+def recognize_template(
     runtime: TaskRuntime,
     image: numpy.ndarray,
-    template_roi: tuple[int, int, int, int],
+    template: numpy.ndarray,
     threshold: float,
-    template_path: Path,
-    annotated_path: Path,
-    report_path: Path,
-) -> TemplateMatchDiagnosticResult:
+) -> TemplateRecognitionResult:
     if not 0.0 < threshold <= 1.0:
         raise TemplateMatchDiagnosticError("Template threshold must be greater than 0 and at most 1.")
 
-    template = crop_template(image, template_roi)
-    template_path.parent.mkdir(parents=True, exist_ok=True)
-    bgr_to_image(template).save(template_path, format="PNG")
-
-    resource_name = "__debug_template__.png"
+    resource_name = "__diagnostic_template__.png"
     if not runtime.resource.override_image(resource_name, template):
         raise TemplateMatchDiagnosticError("Failed to inject the temporary template into Maa Resource.")
 
@@ -101,8 +100,23 @@ def run_template_match(
         box = match_box_from_raw(best_result.box)
         score = float(best_result.score)
 
+    return TemplateRecognitionResult(bool(recognition.hit), score, box)
+
+
+def run_template_match(
+    runtime: TaskRuntime,
+    image: numpy.ndarray,
+    template_roi: tuple[int, int, int, int],
+    threshold: float,
+    annotated_path: Path,
+    report_path: Path,
+) -> TemplateMatchDiagnosticResult:
+    template = crop_template(image, template_roi)
+    recognition = recognize_template(runtime, image, template, threshold)
+
     annotated = bgr_to_image(image)
-    if box is not None:
+    if recognition.box is not None:
+        box = recognition.box
         draw = ImageDraw.Draw(annotated)
         draw.rectangle(
             (box.x, box.y, box.x + box.w - 1, box.y + box.h - 1),
@@ -113,22 +127,20 @@ def run_template_match(
     annotated.save(annotated_path, format="PNG")
 
     report = {
-        "hit": bool(recognition.hit),
-        "score": score,
-        "box": asdict(box) if box else None,
+        "hit": recognition.hit,
+        "score": recognition.score,
+        "box": asdict(recognition.box) if recognition.box else None,
         "template_roi": list(template_roi),
         "threshold": threshold,
-        "template_path": str(template_path.resolve()),
         "annotated_path": str(annotated_path.resolve()),
     }
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
 
     return TemplateMatchDiagnosticResult(
-        hit=bool(recognition.hit),
-        score=score,
-        box=box,
-        template_path=template_path.resolve(),
+        hit=recognition.hit,
+        score=recognition.score,
+        box=recognition.box,
         annotated_path=annotated_path.resolve(),
         report_path=report_path.resolve(),
     )
