@@ -12,6 +12,7 @@ license = { text = "MIT" }
 authors = [{ name = "NZM-auto contributors" }]
 dependencies = [
     "MaaFw==5.12.1",
+    "Pillow==12.3.0",
 ]
 
 [project.scripts]

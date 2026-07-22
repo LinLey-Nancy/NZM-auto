@@ -1,0 +1,6 @@
+{
+  "FrameworkSelfTest": {
+    "recognition": "DirectHit",
+    "action": "DoNothing"
+  }
+}
