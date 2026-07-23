@@ -1,8 +1,7 @@
 {
   "window": {
     "title_pattern": "",
-    "class_name": null,
-    "client_resolution": [1920, 1080]
+    "class_name": null
   },
   "controller": {
     "screencap_mode": "background",
@@ -10,7 +9,9 @@
     "foreground_screencap": ["DXGI_DesktopDup_Window", "ScreenDC"],
     "mouse_input": "PostMessage",
     "keyboard_input": "PostMessage",
-    "allow_foreground_fallback": true
+    "screenshot_target_long_side": 1280,
+    "expected_raw_resolution": [1920, 1080],
+    "expected_screenshot_resolution": [1280, 720]
   },
   "runtime": {
     "resource_path": "assets/resource",
@@ -18,9 +19,6 @@
     "task_timeout_seconds": 60
   },
   "diagnostics": {
-    "debug_dir": "debug",
-    "save_failed_screenshots": true,
-    "save_recognition_details": true,
-    "stale_frame_threshold": 10
+    "debug_dir": "debug"
   }
 }

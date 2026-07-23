@@ -2,12 +2,14 @@
 
 一个基于 MaaFramework 的 Windows 自动化通用框架。
 
-当前阶段包含项目骨架、配置自检和 MaaFramework 运行库版本检测；尚未创建控制器、搜索窗口或发送输入。
+当前已具备窗口发现与选择、Maa Win32Controller 连接、截图与模板识别、显式确认输入、画面变化验证，以及配置驱动的顺序工作流。正式业务模板和目标程序工作流仍需按实际界面制作。
 
 ## 运行自检
 
 ```powershell
+python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
 .\.venv\Scripts\python.exe -m nzm_auto self-test
 ```
 
@@ -60,7 +62,7 @@ nzm-auto run --visible-only
 nzm-auto run --title "标题的一部分"
 ```
 
-该命令会选择窗口、连接 Maa Win32Controller、加载资源包并执行 `FrameworkSelfTest`，然后安全释放。自检 Pipeline 使用 `DirectHit + DoNothing`，不会发送输入。
+该命令会选择窗口、连接 Maa Win32Controller、检查原始画面为 `1920×1080` 且标准识别截图为 `1280×720`、加载资源包并执行 `FrameworkSelfTest`，然后安全释放。任一分辨率不符合要求时会在发送输入前安全失败。自检 Pipeline 使用 `DirectHit + DoNothing`，不会发送输入。任务执行时间超过 `runtime.task_timeout_seconds` 时，程序会请求 Maa 停止任务并安全失败。
 
 ## 调试文件
 
@@ -104,7 +106,7 @@ nzm-auto input-test --title "逆战" --index 0 --point 280 205
 nzm-auto template-action --title "逆战" --index 0 --template assets/resource/image/start.png --action click
 ```
 
-正式模板统一存放在 `assets/resource/image/`。在尚未制作正式模板时，也可以从当前画面裁剪一块仅驻留内存的临时模板来验证完整流程：
+正式模板统一存放在 `assets/resource/image/`。该目录中的本地模板已被 `.gitignore` 排除，不会提交到 GitHub；仓库只保留 `.gitkeep`。在尚未制作正式模板时，也可以从当前画面裁剪一块仅驻留内存的临时模板来验证完整流程：
 
 ```powershell
 nzm-auto template-action --title "逆战" --index 0 --template-roi 200 190 150 32 --action double-click
@@ -114,10 +116,10 @@ nzm-auto template-action --title "逆战" --index 0 --template-roi 200 190 150 3
 
 ## 配置驱动的顺序工作流
 
-复制并修改 `config/workflow.example.json`，把每一步的 `template` 指向 `assets/resource/image/` 下的正式模板，然后执行：
+把 `config/workflow.example.json` 复制为被 Git 忽略的 `config/workflow.local.json`，将每一步的 `template` 指向 `assets/resource/image/` 下的本地模板，然后执行：
 
 ```powershell
-nzm-auto workflow-run --title "逆战" --index 0 --workflow config/workflow.example.json
+nzm-auto workflow-run --title "逆战" --index 0 --workflow config/workflow.local.json
 ```
 
 当前工作流是普通的顺序步骤列表，不是游戏状态机。每一步支持以下配置：

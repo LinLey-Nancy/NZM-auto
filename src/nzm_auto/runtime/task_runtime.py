@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import time
 
 from maa.controller import Win32Controller
+from maa.job import Job
 from maa.resource import Resource
 from maa.tasker import Tasker
 
@@ -40,7 +42,33 @@ def load_task_runtime(
     return TaskRuntime(resource=resource, tasker=tasker)
 
 
-def run_task(runtime: TaskRuntime, entry: str) -> None:
-    task_job = runtime.tasker.post_task(entry).wait()
+def wait_for_job(
+    job: Job,
+    timeout_seconds: float,
+    poll_interval_seconds: float = 0.05,
+) -> bool:
+    """Wait up to the configured deadline without blocking in Maa's unbounded wait."""
+    deadline = time.monotonic() + timeout_seconds
+    while not job.done:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(poll_interval_seconds, remaining))
+    return True
+
+
+def run_task(runtime: TaskRuntime, entry: str, timeout_seconds: float) -> None:
+    task_job = runtime.tasker.post_task(entry)
+    if not wait_for_job(task_job, timeout_seconds):
+        stop_job = runtime.tasker.post_stop()
+        stop_completed = wait_for_job(stop_job, min(timeout_seconds, 5.0))
+        stop_status = (
+            "stop request succeeded"
+            if stop_completed and stop_job.succeeded
+            else "stop request did not complete successfully"
+        )
+        raise TaskRuntimeError(
+            f"Maa task timed out after {timeout_seconds:g} seconds: {entry}; {stop_status}."
+        )
     if not task_job.succeeded:
         raise TaskRuntimeError(f"Maa task failed: {entry}")

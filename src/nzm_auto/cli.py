@@ -375,7 +375,7 @@ def run_program(
     exit_code = 0
     try:
         controller = create_controller(window, config["controller"])
-        connect_controller(controller)
+        connect_controller(controller, config["controller"])
         print("Win32 controller connected successfully.")
         logger.info("Win32 controller connected")
         if capture_requested:
@@ -406,7 +406,11 @@ def run_program(
             print(f"Resource bundle loaded: {resource_path.resolve()}")
             print("Tasker initialized successfully.")
             task_entry = config["runtime"]["task_entry"]
-            run_task(task_runtime, task_entry)
+            run_task(
+                task_runtime,
+                task_entry,
+                config["runtime"]["task_timeout_seconds"],
+            )
             print(f"Pipeline task succeeded: {task_entry}")
             print("The self-test task performed no click or keyboard input.")
             logger.info("Pipeline task succeeded entry=%s", task_entry)
@@ -459,7 +463,7 @@ def run_template_match_program(args) -> int:
     exit_code = 0
     try:
         controller = create_controller(window, config["controller"])
-        connect_controller(controller)
+        connect_controller(controller, config["controller"])
         resource_path = Path(config["runtime"]["resource_path"])
         if not resource_path.is_absolute():
             resource_path = PROJECT_ROOT / resource_path
@@ -541,7 +545,7 @@ def run_input_test_program(args) -> int:
         input_test_controller_config = dict(config["controller"])
         input_test_controller_config["mouse_input"] = "Seize"
         controller = create_controller(window, input_test_controller_config)
-        connect_controller(controller)
+        connect_controller(controller, input_test_controller_config)
         timestamp_prefix = "input-test"
         before_path = workspace.timestamped_path(workspace.screenshots, f"{timestamp_prefix}-before", ".png")
         after_path = workspace.timestamped_path(workspace.screenshots, f"{timestamp_prefix}-after", ".png")
@@ -619,7 +623,7 @@ def run_template_action_program(args) -> int:
         action_controller_config = dict(config["controller"])
         action_controller_config["mouse_input"] = "Seize"
         controller = create_controller(window, action_controller_config)
-        connect_controller(controller)
+        connect_controller(controller, action_controller_config)
 
         resource_path = Path(config["runtime"]["resource_path"])
         if not resource_path.is_absolute():
@@ -736,7 +740,7 @@ def run_workflow_program(args) -> int:
         workflow_controller_config = dict(config["controller"])
         workflow_controller_config["mouse_input"] = "Seize"
         controller = create_controller(window, workflow_controller_config)
-        connect_controller(controller)
+        connect_controller(controller, workflow_controller_config)
 
         resource_path = Path(config["runtime"]["resource_path"])
         if not resource_path.is_absolute():

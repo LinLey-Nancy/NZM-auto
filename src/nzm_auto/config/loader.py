@@ -10,6 +10,22 @@ from typing import Any
 REQUIRED_TOP_LEVEL_KEYS = {"window", "controller", "runtime", "diagnostics"}
 
 
+def _positive_resolution(config: dict[str, Any], key: str) -> list[int]:
+    value = config.get(key)
+    if not (
+        isinstance(value, list)
+        and len(value) == 2
+        and all(
+            not isinstance(component, bool)
+            and isinstance(component, int)
+            and component > 0
+            for component in value
+        )
+    ):
+        raise ValueError(f"controller.{key} must be two positive integers.")
+    return value
+
+
 def load_config(path: Path) -> dict[str, Any]:
     if not path.is_file():
         raise FileNotFoundError(f"Configuration file does not exist: {path}")
@@ -30,13 +46,15 @@ def load_config(path: Path) -> dict[str, Any]:
     if class_name is not None and not isinstance(class_name, str):
         raise ValueError("window.class_name must be a string or null.")
 
-    resolution = config["window"].get("client_resolution")
-    if not (
-        isinstance(resolution, list)
-        and len(resolution) == 2
-        and all(isinstance(value, int) and value > 0 for value in resolution)
+    screenshot_target_long_side = config["controller"].get("screenshot_target_long_side")
+    if (
+        isinstance(screenshot_target_long_side, bool)
+        or not isinstance(screenshot_target_long_side, int)
+        or screenshot_target_long_side <= 0
     ):
-        raise ValueError("window.client_resolution must be two positive integers.")
+        raise ValueError("controller.screenshot_target_long_side must be a positive integer.")
+    _positive_resolution(config["controller"], "expected_raw_resolution")
+    _positive_resolution(config["controller"], "expected_screenshot_resolution")
 
     debug_dir = config["diagnostics"].get("debug_dir")
     if not isinstance(debug_dir, str) or not debug_dir.strip():
@@ -49,5 +67,13 @@ def load_config(path: Path) -> dict[str, Any]:
     task_entry = config["runtime"].get("task_entry")
     if not isinstance(task_entry, str) or not task_entry.strip():
         raise ValueError("runtime.task_entry must be a non-empty string.")
+
+    task_timeout_seconds = config["runtime"].get("task_timeout_seconds")
+    if (
+        isinstance(task_timeout_seconds, bool)
+        or not isinstance(task_timeout_seconds, (int, float))
+        or task_timeout_seconds <= 0
+    ):
+        raise ValueError("runtime.task_timeout_seconds must be a positive number.")
 
     return config
