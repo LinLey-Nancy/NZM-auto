@@ -4,6 +4,8 @@
 
 当前已具备窗口发现与选择、Maa Win32Controller 连接、截图与模板识别、显式确认输入、画面变化验证，以及配置驱动的顺序工作流。正式业务模板和目标程序工作流仍需按实际界面制作。
 
+当前开发状态、架构说明、已验证的输入兼容性结论和后续阶段计划见 [项目状态与路线图](docs/PROJECT_STATUS.md)。
+
 ## 运行自检
 
 ```powershell
@@ -12,6 +14,25 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 .\.venv\Scripts\python.exe -m nzm_auto self-test
 ```
+
+需要桌面工作流编辑器时安装 GUI 可选依赖：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[gui]"
+nzm-auto-gui
+```
+
+桌面端当前支持新建、打开和保存 v2 工作流，添加及排序动作步骤，编辑步骤参数，只读选择目标窗口，选择 Win32 输入兼容策略，并在后台线程中运行或安全停止工作流。运行前会再次显示目标窗口和输入策略确认，不会把 Maa Job 成功直接解释为目标应用已处理输入。
+
+v2 工作流也可以从命令行运行：
+
+```powershell
+nzm-auto workflow-run-v2 `
+  --workflow config/workflow.v2.example.json `
+  --input-profile foreground-compatible
+```
+
+对于游戏窗口，优先使用 `foreground-compatible`。`background-message` 可能被目标应用忽略，即使 MaaFramework 返回成功；正式工作流仍应使用模板或画面变化验证操作结果。
 
 也可在安装项目后使用：
 

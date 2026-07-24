@@ -15,8 +15,14 @@ dependencies = [
     "Pillow==12.3.0",
 ]
 
+[project.optional-dependencies]
+gui = [
+    "PySide6>=6.8,<7",
+]
+
 [project.scripts]
 nzm-auto = "nzm_auto.cli:main"
+nzm-auto-gui = "nzm_auto.gui.app:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/nzm_auto"]

@@ -8,6 +8,9 @@ import logging
 from pathlib import Path
 import sys
 
+from nzm_auto.application.input_profiles import InputProfileName, get_input_profile
+from nzm_auto.application.session import AutomationSession
+from nzm_auto.application.window_service import WindowQuery, list_windows
 from nzm_auto.automation.template_action import (
     TemplateActionError,
     load_template_image,
@@ -29,19 +32,19 @@ from nzm_auto.diagnostics.template_match import (
 )
 from nzm_auto.diagnostics.workspace import create_debug_workspace, configure_file_logging
 from nzm_auto.runtime.maa_runtime import get_maa_version
-from nzm_auto.runtime.task_runtime import TaskRuntimeError, load_task_runtime, run_task
-from nzm_auto.runtime.win32_controller import (
-    ControllerConnectionError,
-    connect_controller,
-    create_controller,
-    deactivate_controller,
-)
-from nzm_auto.windowing.discovery import find_windows
+from nzm_auto.runtime.task_runtime import TaskRuntimeError, run_task
+from nzm_auto.runtime.win32_controller import ControllerConnectionError
 from nzm_auto.windowing.selector import (
     WindowSelectionError,
     choose_window_by_index,
     select_target_window,
 )
+from nzm_auto.workflow.engine import (
+    WorkflowEngine,
+    WorkflowExecutionError as WorkflowV2ExecutionError,
+)
+from nzm_auto.workflow.events import WorkflowEventType
+from nzm_auto.workflow.loader import WorkflowV2ConfigError, load_workflow_v2
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -211,6 +214,36 @@ def build_parser() -> argparse.ArgumentParser:
         "--yes", action="store_true", help="Confirm the complete workflow without a prompt."
     )
 
+    workflow_run_v2 = subparsers.add_parser(
+        "workflow-run-v2",
+        help="Execute a version 2 workflow with independent recognition and input steps.",
+    )
+    workflow_run_v2.add_argument(
+        "--config", type=Path, default=DEFAULT_CONFIG_PATH, help="Path to a JSON config file."
+    )
+    workflow_run_v2.add_argument(
+        "--workflow", type=Path, required=True, help="Path to a version 2 workflow JSON file."
+    )
+    workflow_run_v2.add_argument("--title", help="Override the workflow target title filter.")
+    workflow_run_v2.add_argument(
+        "--class-name", help="Override the workflow target class filter."
+    )
+    workflow_run_v2.add_argument(
+        "--visible-only", action="store_true", help="Only show currently visible windows."
+    )
+    workflow_run_v2.add_argument(
+        "--index", type=int, help="Choose an index without an interactive prompt."
+    )
+    workflow_run_v2.add_argument(
+        "--input-profile",
+        choices=tuple(profile.value for profile in InputProfileName),
+        default=InputProfileName.FOREGROUND_COMPATIBLE.value,
+        help="Win32 input compatibility profile.",
+    )
+    workflow_run_v2.add_argument(
+        "--yes", action="store_true", help="Confirm the complete workflow without a prompt."
+    )
+
     windows = subparsers.add_parser("windows", help="Read-only desktop window tools.")
     window_commands = windows.add_subparsers(dest="windows_command", required=True)
     window_list = window_commands.add_parser("list", help="List desktop windows.")
@@ -259,7 +292,7 @@ def run_window_list(
     class_filter: str | None,
     as_json: bool,
 ) -> int:
-    windows = find_windows(title_filter=title_filter, class_filter=class_filter)
+    windows = list_windows(WindowQuery(title_filter, class_filter))
     if as_json:
         print(json.dumps([window.to_dict() for window in windows], ensure_ascii=False, indent=2))
         return 0
@@ -276,9 +309,7 @@ def run_window_choose(
     selected_index: int | None,
     as_json: bool,
 ) -> int:
-    windows = find_windows(title_filter=title_filter, class_filter=class_filter)
-    if visible_only:
-        windows = [window for window in windows if window.visible]
+    windows = list_windows(WindowQuery(title_filter, class_filter, visible_only))
 
     if not windows:
         print("Window selection failed: no candidate windows are available.", file=sys.stderr)
@@ -316,9 +347,7 @@ def choose_window_for_run(
     visible_only: bool,
     selected_index: int | None,
 ):
-    windows = find_windows(title_filter=title_filter, class_filter=class_filter)
-    if visible_only:
-        windows = [window for window in windows if window.visible]
+    windows = list_windows(WindowQuery(title_filter, class_filter, visible_only))
     if not windows:
         raise WindowSelectionError("No candidate windows are available.")
 
@@ -370,12 +399,11 @@ def run_program(
         window.class_name,
         window.title,
     )
-    controller = None
-    task_runtime = None
+    session = None
     exit_code = 0
     try:
-        controller = create_controller(window, config["controller"])
-        connect_controller(controller, config["controller"])
+        session = AutomationSession.connect(window, config, PROJECT_ROOT, workspace)
+        controller = session.controller
         print("Win32 controller connected successfully.")
         logger.info("Win32 controller connected")
         if capture_requested:
@@ -395,15 +423,8 @@ def run_program(
                 result.channels,
             )
         else:
-            resource_path = Path(config["runtime"]["resource_path"])
-            if not resource_path.is_absolute():
-                resource_path = PROJECT_ROOT / resource_path
-            task_runtime = load_task_runtime(
-                controller,
-                resource_path.resolve(),
-                workspace.logs / "maa",
-            )
-            print(f"Resource bundle loaded: {resource_path.resolve()}")
+            task_runtime = session.initialize_runtime()
+            print(f"Resource bundle loaded: {session.resource_path}")
             print("Tasker initialized successfully.")
             task_entry = config["runtime"]["task_entry"]
             run_task(
@@ -427,9 +448,9 @@ def run_program(
         logger.exception("Task runtime failed")
         exit_code = 6
     finally:
-        if controller is not None:
+        if session is not None:
             try:
-                deactivate_controller(controller)
+                session.close()
                 print("Win32 controller deactivated successfully.")
                 logger.info("Win32 controller deactivated")
             except ControllerConnectionError as error:
@@ -459,15 +480,12 @@ def run_template_match_program(args) -> int:
         return 2
 
     print(f"Selected: 0x{window.hwnd:X} {window.class_name} {window.title}")
-    controller = None
+    session = None
     exit_code = 0
     try:
-        controller = create_controller(window, config["controller"])
-        connect_controller(controller, config["controller"])
-        resource_path = Path(config["runtime"]["resource_path"])
-        if not resource_path.is_absolute():
-            resource_path = PROJECT_ROOT / resource_path
-        runtime = load_task_runtime(controller, resource_path.resolve(), workspace.logs / "maa")
+        session = AutomationSession.connect(window, config, PROJECT_ROOT, workspace)
+        controller = session.controller
+        runtime = session.initialize_runtime()
         image = capture_image(controller)
 
         annotated_path = workspace.timestamped_path(
@@ -495,9 +513,9 @@ def run_template_match_program(args) -> int:
         logger.exception("TemplateMatch diagnostic failed")
         exit_code = 7
     finally:
-        if controller is not None:
+        if session is not None:
             try:
-                deactivate_controller(controller)
+                session.close()
                 print("Win32 controller deactivated successfully.")
             except ControllerConnectionError as error:
                 print(f"Controller cleanup failed: {error}", file=sys.stderr)
@@ -539,13 +557,17 @@ def run_input_test_program(args) -> int:
             print("Input test cancelled; no click was sent.")
             return 0
 
-    controller = None
+    session = None
     exit_code = 0
     try:
-        input_test_controller_config = dict(config["controller"])
-        input_test_controller_config["mouse_input"] = "Seize"
-        controller = create_controller(window, input_test_controller_config)
-        connect_controller(controller, input_test_controller_config)
+        session = AutomationSession.connect(
+            window,
+            config,
+            PROJECT_ROOT,
+            workspace,
+            mouse_input="Seize",
+        )
+        controller = session.controller
         timestamp_prefix = "input-test"
         before_path = workspace.timestamped_path(workspace.screenshots, f"{timestamp_prefix}-before", ".png")
         after_path = workspace.timestamped_path(workspace.screenshots, f"{timestamp_prefix}-after", ".png")
@@ -577,9 +599,9 @@ def run_input_test_program(args) -> int:
         logger.exception("Input test failed")
         exit_code = 8
     finally:
-        if controller is not None:
+        if session is not None:
             try:
-                deactivate_controller(controller)
+                session.close()
                 print("Win32 controller deactivated successfully.")
             except ControllerConnectionError as error:
                 print(f"Controller cleanup failed: {error}", file=sys.stderr)
@@ -617,18 +639,18 @@ def run_template_action_program(args) -> int:
             print("Template action cancelled; no input was sent.")
             return 0
 
-    controller = None
+    session = None
     exit_code = 0
     try:
-        action_controller_config = dict(config["controller"])
-        action_controller_config["mouse_input"] = "Seize"
-        controller = create_controller(window, action_controller_config)
-        connect_controller(controller, action_controller_config)
-
-        resource_path = Path(config["runtime"]["resource_path"])
-        if not resource_path.is_absolute():
-            resource_path = PROJECT_ROOT / resource_path
-        runtime = load_task_runtime(controller, resource_path.resolve(), workspace.logs / "maa")
+        session = AutomationSession.connect(
+            window,
+            config,
+            PROJECT_ROOT,
+            workspace,
+            mouse_input="Seize",
+        )
+        controller = session.controller
+        runtime = session.initialize_runtime()
 
         if args.template is not None:
             template_path = args.template
@@ -682,9 +704,9 @@ def run_template_action_program(args) -> int:
         logger.exception("Template action failed")
         exit_code = 9
     finally:
-        if controller is not None:
+        if session is not None:
             try:
-                deactivate_controller(controller)
+                session.close()
                 print("Win32 controller deactivated successfully.")
             except ControllerConnectionError as error:
                 print(f"Controller cleanup failed: {error}", file=sys.stderr)
@@ -734,18 +756,18 @@ def run_workflow_program(args) -> int:
             print("Workflow cancelled; no input was sent.")
             return 0
 
-    controller = None
+    session = None
     exit_code = 0
     try:
-        workflow_controller_config = dict(config["controller"])
-        workflow_controller_config["mouse_input"] = "Seize"
-        controller = create_controller(window, workflow_controller_config)
-        connect_controller(controller, workflow_controller_config)
-
-        resource_path = Path(config["runtime"]["resource_path"])
-        if not resource_path.is_absolute():
-            resource_path = PROJECT_ROOT / resource_path
-        runtime = load_task_runtime(controller, resource_path.resolve(), workspace.logs / "maa")
+        session = AutomationSession.connect(
+            window,
+            config,
+            PROJECT_ROOT,
+            workspace,
+            mouse_input="Seize",
+        )
+        controller = session.controller
+        runtime = session.initialize_runtime()
         result = run_workflow(definition, runtime, controller, workspace)
 
         for index, step_result in enumerate(result.steps, start=1):
@@ -768,9 +790,106 @@ def run_workflow_program(args) -> int:
         logger.exception("Workflow failed")
         exit_code = 10
     finally:
-        if controller is not None:
+        if session is not None:
             try:
-                deactivate_controller(controller)
+                session.close()
+                print("Win32 controller deactivated successfully.")
+            except ControllerConnectionError as error:
+                print(f"Controller cleanup failed: {error}", file=sys.stderr)
+                exit_code = 4
+    return exit_code
+
+
+def run_workflow_v2_program(args) -> int:
+    config = load_config(args.config)
+    workspace = create_debug_workspace(PROJECT_ROOT, config["diagnostics"]["debug_dir"])
+    log_path = configure_file_logging(workspace)
+    logger = logging.getLogger(__name__)
+    workflow_path = args.workflow
+    if not workflow_path.is_absolute():
+        workflow_path = PROJECT_ROOT / workflow_path
+    try:
+        definition = load_workflow_v2(workflow_path.resolve(), PROJECT_ROOT)
+    except WorkflowV2ConfigError as error:
+        print(f"Workflow v2 configuration failed: {error}", file=sys.stderr)
+        return 11
+
+    target = definition.target
+    title_filter = args.title or (target.title_pattern if target else None)
+    class_filter = args.class_name or (target.class_name if target else None)
+    profile = get_input_profile(args.input_profile)
+    print(f"Debug log: {log_path}")
+    print(f"MaaFramework: {get_maa_version()}")
+    print(f"Workflow v2: {definition.name} ({len(definition.steps)} step(s))")
+    print(
+        f"Input profile: {profile.name.value}; mouse={profile.mouse_method}; "
+        f"keyboard={profile.keyboard_method}"
+    )
+    print(f"Input warning: {profile.warning}")
+
+    try:
+        window = choose_window_for_run(
+            title_filter,
+            class_filter,
+            args.visible_only,
+            args.index,
+        )
+    except WindowSelectionError as error:
+        print(f"Window selection failed: {error}", file=sys.stderr)
+        return 2
+
+    print(f"Selected: 0x{window.hwnd:X} {window.class_name} {window.title}")
+    if not args.yes:
+        print("Type YES to perform this workflow: ", end="", file=sys.stderr, flush=True)
+        if sys.stdin.readline().strip() != "YES":
+            print("Workflow cancelled; no input was sent.")
+            return 0
+
+    def report_event(event) -> None:
+        if event.type in {
+            WorkflowEventType.STEP_STARTED,
+            WorkflowEventType.STEP_SUCCEEDED,
+            WorkflowEventType.STEP_FAILED,
+            WorkflowEventType.STEP_SKIPPED,
+        }:
+            print(f"{event.type.value}: {event.step_id} {event.step_name or ''}".rstrip())
+
+    session = None
+    exit_code = 0
+    try:
+        session = AutomationSession.connect(
+            window,
+            config,
+            PROJECT_ROOT,
+            workspace,
+            mouse_input=profile.mouse_method,
+            keyboard_input=profile.keyboard_method,
+        )
+        result = WorkflowEngine(report_event).run(definition, session)
+        if result.cancelled:
+            print("Workflow v2 cancelled.")
+        else:
+            print(f"Workflow v2 succeeded: {result.workflow_name}")
+        logger.info(
+            "Workflow v2 finished name=%r steps=%s cancelled=%s",
+            result.workflow_name,
+            len(result.steps),
+            result.cancelled,
+        )
+    except (
+        ControllerConnectionError,
+        ScreenshotError,
+        TaskRuntimeError,
+        TemplateActionError,
+        WorkflowV2ExecutionError,
+    ) as error:
+        print(f"Workflow v2 failed: {error}", file=sys.stderr)
+        logger.exception("Workflow v2 failed")
+        exit_code = 11
+    finally:
+        if session is not None:
+            try:
+                session.close()
                 print("Win32 controller deactivated successfully.")
             except ControllerConnectionError as error:
                 print(f"Controller cleanup failed: {error}", file=sys.stderr)
@@ -860,6 +979,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_template_action_program(args)
     if args.command == "workflow-run":
         return run_workflow_program(args)
+    if args.command == "workflow-run-v2":
+        return run_workflow_v2_program(args)
     if args.command == "windows" and args.windows_command == "list":
         return run_window_list(args.title, args.class_name, args.json)
     if args.command == "windows" and args.windows_command == "select":
